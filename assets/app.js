@@ -59,6 +59,12 @@ const state = {
 const SESSION_KEY = 'p2p-chat-session';
 let sessionToken = null;
 
+// 打开 ?debug=1 时在控制台输出信令与连接事件，便于排查网络问题
+const DEBUG = /[?&]debug=1/.test(location.search);
+function dlog(...args) {
+  if (DEBUG) console.log('[p2p]', ...args);
+}
+
 function loadSession() {
   try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { return null; }
 }
@@ -173,6 +179,7 @@ function openHost(code) {
       clearTimeout(timer);
       state.peer = peer;
       wirePeer(peer);
+      dlog('host open', hostIdFor(code));
       resolve();
     });
 
@@ -206,6 +213,7 @@ function openGuest() {
       clearTimeout(timer);
       state.peer = peer;
       wirePeer(peer);
+      dlog('guest open', peer.id);
       resolve();
     });
 
@@ -224,6 +232,7 @@ function openGuest() {
 
 function wirePeer(peer) {
   peer.on('connection', (conn) => {
+    dlog('incoming connection, role=', state.role);
     if (state.role !== 'host') return;
     if (state.conn && state.conn.open) {
       try { conn.close(); } catch (e) { /* noop */ }
@@ -233,6 +242,7 @@ function wirePeer(peer) {
   });
 
   peer.on('disconnected', () => {
+    dlog('signaling disconnected');
     if (state.leaving) return;
     setStatus('warn', '信令断开，正在重连…');
     try { peer.reconnect(); } catch (e) { /* noop */ }
@@ -266,12 +276,14 @@ function attach(conn) {
   conn.on('open', () => onConnOpen(conn));
   conn.on('data', (data) => { if (state.conn === conn) onData(data); });
   conn.on('close', () => onConnClose(conn));
-  conn.on('error', () => { if (state.conn === conn) onConnError(); });
+  conn.on('error', (e) => { dlog('conn error', e && (e.type || e.message)); if (state.conn === conn) onConnError(); });
   if (conn.open) onConnOpen(conn);
+  dlog('attach conn, open=', conn.open, 'peer=', conn.peer);
 }
 
 function onConnOpen(conn) {
   if (state.conn !== conn) return;
+  dlog('conn open');
   state.connected = true;
   state.guestTries = 0;
   clearTimeout(state.retryTimer);
@@ -331,6 +343,7 @@ function guestConnect() {
     serialization: 'raw'
   });
   attach(conn);
+  dlog('guest connect try', state.guestTries, '->', hostIdFor(state.room));
 
   clearTimeout(state.retryTimer);
   state.retryTimer = setTimeout(() => {

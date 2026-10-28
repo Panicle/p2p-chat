@@ -326,9 +326,12 @@ function closeConn() {
   }
 }
 
+const MAX_TRIES = 5;
+const RETRY_MS = 8000;
+
 function guestConnect() {
   if (state.connected || state.leaving) return;
-  if (state.guestTries >= 3) {
+  if (state.guestTries >= MAX_TRIES) {
     setStatus('warn', '未找到对方');
     systemMsg('连接超时：请确认会话码正确，且对方页面保持打开');
     return;
@@ -348,7 +351,7 @@ function guestConnect() {
   clearTimeout(state.retryTimer);
   state.retryTimer = setTimeout(() => {
     if (!state.connected && !state.leaving) guestConnect();
-  }, 6000);
+  }, RETRY_MS);
 }
 
 /* ---------------- 入口 ---------------- */

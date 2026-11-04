@@ -83,7 +83,11 @@ const el = {
   fileInput: $('#file-input'),
   btnLeave: $('#btn-leave'),
   dropHint: $('#drop-hint'),
-  emptyState: $('#empty-state')
+  emptyState: $('#empty-state'),
+  btnDiag: $('#btn-diag'),
+  diagPanel: $('#diag-panel'),
+  diagBody: $('#diag-body'),
+  diagClose: $('#diag-close')
 };
 
 const state = {
@@ -870,6 +874,134 @@ function finishIncoming() {
   finishFile(inc.node, URL.createObjectURL(blob), false);
 }
 
+/* ---------------- 网络自检 ---------------- */
+
+// 单独开一个 Peer 测信令服务器是否可达
+function testSignalServer() {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    let done = false;
+    let peer;
+
+    const finish = (ok, err) => {
+      if (done) return;
+      done = true;
+      try { peer && peer.destroy(); } catch (e) { /* noop */ }
+      resolve({ ok, ms: Date.now() - t0, err: err || null });
+    };
+
+    const timer = setTimeout(() => finish(false, '超时'), 10000);
+
+    try {
+      peer = new Peer('diag' + randomId(10), Object.assign({}, PEER_OPTS, { token: randomId(16) }));
+    } catch (e) {
+      clearTimeout(timer);
+      finish(false, e.message);
+      return;
+    }
+
+    peer.on('open', () => {
+      clearTimeout(timer);
+      finish(true);
+    });
+
+    peer.on('error', (e) => {
+      clearTimeout(timer);
+      finish(false, (e && (e.type || e.message)) || 'unknown');
+    });
+  });
+}
+
+// 收集本机能拿到的 ICE 候选，判断是否有中继
+function probeIce() {
+  return new Promise((resolve) => {
+    const counts = { host: 0, srflx: 0, relay: 0, prflx: 0 };
+    const seen = new Set();
+
+    let pc;
+    try {
+      pc = new RTCPeerConnection({ iceServers: PEER_OPTS.config.iceServers });
+    } catch (e) {
+      resolve({ counts, error: e.message });
+      return;
+    }
+
+    pc.onicecandidate = (e) => {
+      const c = e.candidate;
+      if (!c || !c.candidate || seen.has(c.candidate)) return;
+      seen.add(c.candidate);
+      const t = c.type || 'host';
+      counts[t] = (counts[t] || 0) + 1;
+    };
+
+    let failed = null;
+    try {
+      pc.createDataChannel('probe');
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .catch((e) => { failed = e.message; });
+    } catch (e) {
+      failed = e.message;
+    }
+
+    setTimeout(() => {
+      try { pc.close(); } catch (e) { /* noop */ }
+      resolve({ counts, error: failed });
+    }, 9000);
+  });
+}
+
+function renderDiagResult(sig, ice) {
+  const c = ice.counts;
+  const total = c.host + c.srflx + c.relay + c.prflx;
+
+  let verdict;
+  let kind;
+
+  if (!sig.ok) {
+    kind = 'bad';
+    verdict = '信令服务器连不上（' + (sig.err || '未知') + '）。两端无法互相找到，任何设置都白搭。' +
+      '请确认网络没有拦截 wss://peer.incubateur.education.gouv.fr，必要时换个网络再试。';
+  } else if (c.relay > 0) {
+    kind = 'ok';
+    verdict = '信令与中继都正常。跨网络应该能连上。如果实际仍连不上，' +
+      '请确认两端输入的是同一个密码、且一端点「创建会话」、另一端点「加入会话」。';
+  } else if (c.srflx > 0) {
+    kind = 'bad';
+    verdict = '信令正常，但没有拿到中继（relay = 0），说明 TURN 服务器不可用。' +
+      '同一局域网内可能能连；手机流量和家宽这种跨网络场景会失败。';
+  } else if (total === 0) {
+    kind = 'bad';
+    verdict = '一个 ICE 候选都没拿到，浏览器或网络把 WebRTC 完全限制了。' +
+      '请检查是否开了代理、企业防火墙或隐私插件。';
+  } else {
+    kind = 'bad';
+    verdict = '只有本机直连候选，既没有公网映射也没有中继，跨网络无法连接。';
+  }
+
+  el.diagBody.innerHTML =
+    '<p class="diag-line">信令服务器：<b>' +
+    (sig.ok ? '连通 ' + sig.ms + ' ms' : '失败（' + (sig.err || '未知') + '）') +
+    '</b></p>' +
+    '<p class="diag-line">直连候选 host：<b>' + c.host + '</b></p>' +
+    '<p class="diag-line">公网映射 srflx：<b>' + c.srflx + '</b></p>' +
+    '<p class="diag-line">中继 relay：<b>' + c.relay + '</b></p>' +
+    (ice.error ? '<p class="diag-line">探测异常：' + ice.error + '</p>' : '') +
+    '<p class="diag-verdict ' + kind + '">' + verdict + '</p>';
+}
+
+async function runDiagnostics() {
+  el.diagPanel.classList.remove('hidden');
+  el.diagBody.textContent = '正在测试信令服务器（最多 10 秒）…';
+
+  const sig = await testSignalServer();
+
+  el.diagBody.textContent = '正在收集网络候选（约 9 秒）…';
+  const ice = await probeIce();
+
+  renderDiagResult(sig, ice);
+}
+
 /* ---------------- 交互绑定 ---------------- */
 
 function autosize() {
@@ -924,6 +1056,9 @@ el.fileInput.addEventListener('change', () => {
 });
 
 el.btnLeave.addEventListener('click', leave);
+
+el.btnDiag.addEventListener('click', runDiagnostics);
+el.diagClose.addEventListener('click', () => el.diagPanel.classList.add('hidden'));
 
 // 拖拽发送
 let dragDepth = 0;

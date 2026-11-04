@@ -58,7 +58,7 @@ const PROBE_TARGETS = [
 // 进入密码：双方必须输入正确密码才能创建或加入会话
 // 注意：这是纯前端校验，密码写在源码里，查看网页源码即可看到。
 // 它的作用是防止误入，以及让不知道密码的人无法推算出房间 ID。
-const ROOM_PASS = 'XT8A2M';
+const ROOM_PASS = '9527';
 
 // 撤回时限：发出后 2 分钟内可撤回
 const RECALL_WINDOW = 2 * 60 * 1000;
@@ -672,6 +672,7 @@ function enterChat() {
   if (state.role !== 'host') el.emptyState.classList.add('hidden');
   renderAvatars();
   saveSession();
+  requestNotifyPermission();
   el.msgInput.focus();
 }
 
@@ -801,6 +802,7 @@ function onData(data) {
 function onControl(msg) {
   if (msg.t === 'text') {
     addText('peer', msg.text, msg.ts, msg.id);
+    onPeerMessage(msg.text);
   } else if (msg.t === 'recall') {
     const row = findMessageRow(msg.id);
     if (row) markRecalled(row, false);
@@ -821,6 +823,7 @@ function onControl(msg) {
       lastP: 0,
       node: createFileBubble('peer', meta, false)
     };
+    if (meta.voice) onPeerMessage('语音消息');
   } else if (msg.t === 'file-end') {
     finishIncoming();
   } else if (msg.t === 'bye') {
@@ -828,6 +831,77 @@ function onControl(msg) {
     systemMsg('对方已离开会话');
   }
 }
+
+/* ---------------- 消息提醒 ---------------- */
+
+const BASE_TITLE = document.title;
+let unread = 0;
+let audioCtx = null;
+
+// 收到对方消息：声音 + 后台通知 + 标题未读角标
+function onPeerMessage(text) {
+  playNotifySound();
+  if (document.hidden) {
+    unread++;
+    document.title = '(' + unread + ') ' + BASE_TITLE;
+    notifyDesktop(text);
+  }
+}
+
+// 用 Web Audio 生成两声短促提示音，不依赖外部音频文件
+function playNotifySound() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx = audioCtx || new Ctx();
+    const ctx = audioCtx;
+    if (ctx.state === 'suspended') { ctx.resume(); }
+    const t0 = ctx.currentTime;
+    [0, 0.18].forEach((offset, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = i === 0 ? 880 : 1174.66;
+      gain.gain.setValueAtTime(0.0001, t0 + offset);
+      gain.gain.exponentialRampToValueAtTime(0.28, t0 + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + offset + 0.15);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t0 + offset);
+      osc.stop(t0 + offset + 0.16);
+    });
+  } catch (e) { /* noop */ }
+}
+
+// 请求桌面通知权限（进入会话后触发一次）
+function requestNotifyPermission() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    try { Notification.requestPermission(); } catch (e) { /* noop */ }
+  }
+}
+
+// 页面在后台时弹桌面通知
+function notifyDesktop(text) {
+  if (!('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+  try {
+    const n = new Notification('新消息', {
+      body: String(text).slice(0, 120),
+      tag: 'p2p-chat'
+    });
+    n.onclick = () => { window.focus(); n.close(); };
+    setTimeout(() => n.close(), 5000);
+  } catch (e) { /* noop */ }
+}
+
+// 回到前台时清零未读角标
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    unread = 0;
+    document.title = BASE_TITLE;
+  }
+});
 
 /* ---------------- 文件传输 ---------------- */
 

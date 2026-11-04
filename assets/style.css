@@ -155,7 +155,7 @@ body {
   gap: 10px;
 }
 
-.entry input[type="password"] {
+.entry input {
   width: 100%;
   height: 46px;
   padding: 0 14px;
@@ -165,31 +165,26 @@ body {
   color: var(--text);
   font: inherit;
   font-size: 15px;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.16em;
+  text-align: center;
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.entry input[type="password"]::placeholder {
+.entry input::placeholder {
   letter-spacing: 0.02em;
   font-size: 14px;
   color: #5d6878;
 }
 
-.entry input[type="password"]:focus {
+.entry input:focus {
   border-color: rgba(91, 140, 255, 0.65);
   box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.15);
 }
 
-.entry input[type="password"].invalid {
+.entry input.invalid {
   border-color: rgba(255, 95, 109, 0.7);
   box-shadow: 0 0 0 3px rgba(255, 95, 109, 0.15);
-}
-
-.entry-btns {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .pass-error {

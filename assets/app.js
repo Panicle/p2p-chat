@@ -72,8 +72,6 @@ const el = {
   topbar: $('#topbar'),
   passInput: $('#pass-input'),
   passError: $('#pass-error'),
-  btnCreate: $('#btn-create'),
-  btnJoin: $('#btn-join'),
   peerAvatar: $('#peer-avatar'),
   statusText: $('#status-text'),
   statusDot: $('#status-dot'),
@@ -498,29 +496,35 @@ function guestConnect() {
 
 /* ---------------- 入口 ---------------- */
 
-async function createRoom(roomId) {
-  el.btnCreate.disabled = true;
+let entering = false;
+
+function showPassError(focus) {
+  el.passError.classList.remove('hidden');
+  el.passInput.classList.add('invalid');
+  if (focus) {
+    el.passInput.focus();
+    el.passInput.select();
+  }
+}
+
+// 输对密码即进入：先尝试作为发起方注册，若房间已被占用则自动转为接入
+async function enterSession(roomId) {
+  state.room = roomId;
+  state.role = 'host';
   try {
-    // 先把角色设为主机，确保 openHost 内部注册的 connection 监听不会因 role 还没赋值而丢弃连接
-    state.room = roomId;
-    state.role = 'host';
-    try {
-      await openHost(roomId);
-      enterChat();
-      setStatus('idle', '等待对方加入');
-    } catch (e) {
-      if (e.code === 'unavailable-id') {
-        // 房间已被对方占为主机，直接转为加入
-        state.role = null;
-        joinRoom(roomId);
-        return;
-      }
-      throw e;
-    }
+    await openHost(roomId);
+    enterChat();
+    setStatus('idle', '等待对方进入');
   } catch (e) {
+    if (e.code === 'unavailable-id') {
+      // 对方已经占了这个房间，自动改为接入
+      state.role = null;
+      await joinRoom(roomId);
+      return;
+    }
+    state.role = null;
+    state.room = null;
     alert(e.message);
-  } finally {
-    el.btnCreate.disabled = false;
   }
 }
 
@@ -533,28 +537,29 @@ async function joinRoom(roomId) {
     setStatus('wait', '正在连接对方…');
     guestConnect();
   } catch (e) {
+    state.role = null;
+    state.room = null;
     alert(e.message);
   }
 }
 
-function showPassError() {
-  el.passError.classList.remove('hidden');
-  el.passInput.classList.add('invalid');
-  el.passInput.focus();
-  el.passInput.select();
-}
-
-// 校验密码后再进入：创建 / 加入共用同一道门
-function enterSession(action) {
+// 校验密码，正确则自动进入
+async function tryEnter(focusOnError) {
+  if (entering || state.role) return;
   const pass = el.passInput.value.trim().toUpperCase();
   if (pass !== ROOM_PASS) {
-    showPassError();
+    showPassError(focusOnError);
     return;
   }
+  entering = true;
   el.passError.classList.add('hidden');
   el.passInput.classList.remove('invalid');
   el.passInput.blur();
-  action(roomIdFor(pass));
+  try {
+    await enterSession(roomIdFor(pass));
+  } finally {
+    entering = false;
+  }
 }
 
 function enterChat() {
@@ -1023,18 +1028,22 @@ function leave() {
   location.reload();
 }
 
-el.btnCreate.addEventListener('click', () => enterSession(createRoom));
-el.btnJoin.addEventListener('click', () => enterSession(joinRoom));
-
 el.passInput.addEventListener('input', () => {
+  const pass = el.passInput.value.trim().toUpperCase();
   el.passError.classList.add('hidden');
   el.passInput.classList.remove('invalid');
+
+  if (pass === ROOM_PASS) {
+    tryEnter(false);
+  } else if (pass.length >= ROOM_PASS.length) {
+    showPassError(false);
+  }
 });
 
 el.passInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    enterSession(createRoom);
+    tryEnter(true);
   }
 });
 

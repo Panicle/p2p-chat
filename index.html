@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#080b10">
 <title>直连聊天 · P2P</title>
-<link rel="stylesheet" href="assets/style.css?v=10">
+<link rel="stylesheet" href="assets/style.css?v=11">
 </head>
 <body>
 <div id="app">
@@ -58,6 +58,11 @@
         </div>
       </div>
       <div class="actions">
+        <button id="btn-call" class="icon-btn" title="语音通话" aria-label="语音通话">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+          </svg>
+        </button>
         <span class="avatar avatar-top" id="peer-avatar" title="对方头像"></span>
         <button id="btn-leave" class="icon-btn" title="离开会话" aria-label="离开会话">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -67,6 +72,13 @@
       </div>
     </header>
 
+    <div id="call-bar" class="call-bar hidden">
+      <span class="call-dot"></span>
+      <span class="call-text">语音通话中</span>
+      <span class="call-time">00:00</span>
+      <button id="btn-hangup" class="hangup-btn" type="button">挂断</button>
+    </div>
+
     <main id="messages" class="messages">
       <div class="empty" id="empty-state">
         <p class="empty-title">会话已创建</p>
@@ -75,6 +87,13 @@
     </main>
 
     <footer class="composer">
+      <button id="btn-voice" class="icon-btn file-btn" title="按住录音" aria-label="录音">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="22"/>
+        </svg>
+      </button>
       <label class="icon-btn file-btn" title="发送文件或图片">
         <input type="file" id="file-input" multiple hidden>
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -100,7 +119,7 @@
   </div>
 
 </div>
-<script src="assets/peerjs.min.js?v=10"></script>
-<script src="assets/app.js?v=10"></script>
+<script src="assets/peerjs.min.js?v=11"></script>
+<script src="assets/app.js?v=11"></script>
 </body>
 </html>

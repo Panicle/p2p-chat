@@ -109,7 +109,12 @@ const el = {
   btnDiag: $('#btn-diag'),
   diagPanel: $('#diag-panel'),
   diagBody: $('#diag-body'),
-  diagClose: $('#diag-close')
+  diagClose: $('#diag-close'),
+  btnCall: $('#btn-call'),
+  btnVoice: $('#btn-voice'),
+  btnHangup: $('#btn-hangup'),
+  callBar: $('#call-bar'),
+  callTime: $('#call-bar .call-time')
 };
 
 const state = {
@@ -124,7 +129,13 @@ const state = {
   retryTimer: null,
   leaving: false,
   promoting: false,
-  promoteCount: 0
+  promoteCount: 0,
+  call: null,
+  localStream: null,
+  remoteAudio: null,
+  inCall: false,
+  calling: false,
+  recording: false
 };
 
 const SESSION_KEY = 'p2p-chat-session';
@@ -410,6 +421,16 @@ function wirePeer(peer) {
     if (state.leaving || state.promoting) return;
     setStatus('warn', '信令断开，正在重连…');
     try { peer.reconnect(); } catch (e) { /* noop */ }
+  });
+
+  // 收到实时语音来电：自动接听（双方已通过密码建立信任）
+  peer.on('call', (call) => {
+    dlog('incoming call');
+    if (state.inCall || state.calling) {
+      try { call.close(); } catch (e) { /* noop */ }
+      return;
+    }
+    answerCall(call);
   });
 }
 
@@ -788,7 +809,9 @@ function onControl(msg) {
     const meta = {
       name: msg.name || '未命名文件',
       size: Number(msg.size) || 0,
-      mime: msg.mime || 'application/octet-stream'
+      mime: msg.mime || 'application/octet-stream',
+      voice: !!msg.voice,
+      duration: Number(msg.duration) || 0
     };
     state.incoming = {
       id: msg.id,
@@ -817,18 +840,18 @@ function createFileBubble(who, meta, outgoing) {
   if (!mine) row.appendChild(makeAvatar('peer'));
 
   const bubble = document.createElement('div');
-  bubble.className = 'bubble file';
+  bubble.className = 'bubble file' + (meta.voice ? ' voice' : '');
 
   const head = document.createElement('div');
   head.className = 'file-head';
 
   const name = document.createElement('div');
   name.className = 'file-name';
-  name.textContent = meta.name;
+  name.textContent = meta.voice ? '语音消息' : meta.name;
 
   const size = document.createElement('div');
   size.className = 'file-size';
-  size.textContent = fmtSize(meta.size);
+  size.textContent = meta.voice ? fmtDuration(meta.duration || 0) : fmtSize(meta.size);
 
   head.append(name, size);
 
@@ -880,9 +903,24 @@ function finishFile(node, url, outgoing) {
     img.alt = node.meta.name;
     img.addEventListener('click', () => window.open(url, '_blank'));
     node.bubble.insertBefore(img, node.bubble.firstChild);
+  } else if ((node.meta.mime || '').startsWith('audio/')) {
+    const audio = document.createElement('audio');
+    audio.className = 'voice-player';
+    audio.controls = true;
+    audio.preload = 'metadata';
+    audio.src = url;
+    node.bubble.insertBefore(audio, node.bubble.firstChild);
   }
 
   node.bubble.appendChild(link);
+}
+
+// mm:ss 格式化，用于语音消息时长与通话计时
+function fmtDuration(sec) {
+  const s = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
 }
 
 async function drain() {
@@ -893,12 +931,14 @@ async function drain() {
   }
 }
 
-async function sendOneFile(file) {
+async function sendOneFile(file, opts = {}) {
   const id = uid();
   const meta = {
     name: file.name || ('粘贴图片-' + Date.now() + '.png'),
     size: file.size,
-    mime: file.type || 'application/octet-stream'
+    mime: file.type || 'application/octet-stream',
+    voice: !!opts.voice,
+    duration: opts.duration || 0
   };
 
   state.conn.send(JSON.stringify({
@@ -906,7 +946,9 @@ async function sendOneFile(file) {
     id,
     name: meta.name,
     size: meta.size,
-    mime: meta.mime
+    mime: meta.mime,
+    voice: meta.voice,
+    duration: meta.duration
   }));
 
   const node = createFileBubble('me', meta, true);
@@ -960,6 +1002,192 @@ function finishIncoming() {
   state.incoming = null;
   const blob = new Blob(inc.chunks, { type: inc.meta.mime });
   finishFile(inc.node, URL.createObjectURL(blob), false);
+}
+
+/* ---------------- 实时语音通话 ---------------- */
+
+function remotePeerId() {
+  return state.conn ? state.conn.peer : null;
+}
+
+// 发起通话：拿麦克风 → peer.call 对方 → 等远端流
+async function startCall() {
+  if (state.inCall || state.calling) return;
+  if (!isOpen()) { systemMsg('尚未建立直连'); return; }
+  const remoteId = remotePeerId();
+  if (!remoteId) { systemMsg('对方尚未就绪'); return; }
+
+  state.calling = true;
+  el.btnCall.classList.add('calling');
+  el.btnCall.title = '呼叫中…';
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    state.calling = false;
+    el.btnCall.classList.remove('calling');
+    el.btnCall.title = '语音通话';
+    if (e && e.name === 'NotAllowedError') systemMsg('麦克风权限被拒绝，请在浏览器设置中允许');
+    else if (e && e.name === 'NotFoundError') systemMsg('未检测到麦克风');
+    else systemMsg('无法访问麦克风：' + (e && e.message));
+    return;
+  }
+
+  state.localStream = stream;
+  const call = state.peer.call(remoteId, stream);
+  state.call = call;
+  wireCall(call);
+}
+
+// 接听来电（自动）：拿麦克风 → answer
+async function answerCall(call) {
+  state.calling = true;
+  el.btnCall.classList.add('calling');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    try { call.close(); } catch (err) { /* noop */ }
+    state.calling = false;
+    el.btnCall.classList.remove('calling');
+    systemMsg('无法接听：麦克风不可用');
+    return;
+  }
+  state.localStream = stream;
+  state.call = call;
+  call.answer(stream);
+  wireCall(call);
+}
+
+function wireCall(call) {
+  call.on('stream', (remoteStream) => {
+    if (!state.remoteAudio) {
+      state.remoteAudio = new Audio();
+      state.remoteAudio.autoplay = true;
+    }
+    state.remoteAudio.srcObject = remoteStream;
+    onCallEstablished();
+  });
+  call.on('close', () => onCallClosed());
+  call.on('error', () => onCallClosed());
+}
+
+function onCallEstablished() {
+  state.inCall = true;
+  state.calling = false;
+  el.btnCall.classList.remove('calling');
+  el.btnCall.classList.add('in-call');
+  el.btnCall.title = '挂断';
+  showCallBar();
+}
+
+function endCall() {
+  if (state.call) { try { state.call.close(); } catch (e) { /* noop */ } }
+  onCallClosed();
+}
+
+function onCallClosed() {
+  state.inCall = false;
+  state.calling = false;
+  state.call = null;
+  el.btnCall.classList.remove('calling', 'in-call');
+  el.btnCall.title = '语音通话';
+  hideCallBar();
+  stopLocalStream();
+  if (state.remoteAudio) {
+    try { state.remoteAudio.srcObject = null; } catch (e) { /* noop */ }
+  }
+}
+
+function stopLocalStream() {
+  if (state.localStream) {
+    state.localStream.getTracks().forEach((t) => { try { t.stop(); } catch (e) { /* noop */ } });
+    state.localStream = null;
+  }
+}
+
+let callTimer = null;
+
+function showCallBar() {
+  clearInterval(callTimer);
+  el.callBar.classList.remove('hidden');
+  const t0 = Date.now();
+  el.callTime.textContent = '00:00';
+  callTimer = setInterval(() => {
+    el.callTime.textContent = fmtDuration((Date.now() - t0) / 1000);
+  }, 1000);
+}
+
+function hideCallBar() {
+  clearInterval(callTimer);
+  callTimer = null;
+  el.callBar.classList.add('hidden');
+}
+
+/* ---------------- 语音消息 ---------------- */
+
+let recorder = null;
+let recChunks = [];
+let recStart = 0;
+let recTimer = null;
+
+async function startRecording() {
+  if (state.recording) return;
+  if (!isOpen()) { systemMsg('尚未建立直连'); return; }
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    if (e && e.name === 'NotAllowedError') systemMsg('麦克风权限被拒绝，请在浏览器设置中允许');
+    else if (e && e.name === 'NotFoundError') systemMsg('未检测到麦克风');
+    else systemMsg('无法访问麦克风');
+    return;
+  }
+
+  recChunks = [];
+  const mime = MediaRecorder.isTypeSupported('audio/webm')
+    ? 'audio/webm'
+    : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recChunks.push(e.data); };
+  recorder.onstop = () => {
+    stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) { /* noop */ } });
+    finalizeRecording(mime || 'audio/webm');
+  };
+  recorder.start();
+  recStart = Date.now();
+  state.recording = true;
+  el.btnVoice.classList.add('recording');
+  el.btnVoice.title = '录音中，点击停止';
+
+  recTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - recStart) / 1000);
+    el.btnVoice.title = '录音中 ' + s + 's，点击停止';
+  }, 500);
+}
+
+function stopRecording() {
+  if (!state.recording || !recorder) return;
+  clearInterval(recTimer);
+  recorder.stop();
+  state.recording = false;
+  el.btnVoice.classList.remove('recording');
+  el.btnVoice.title = '按住录音';
+}
+
+function finalizeRecording(mime) {
+  const duration = Math.max(1, Math.round((Date.now() - recStart) / 1000));
+  const blob = new Blob(recChunks, { type: mime });
+  if (blob.size < 300) {
+    systemMsg('录音太短，未发送');
+    return;
+  }
+  const ext = mime === 'audio/mp4' ? 'm4a' : 'webm';
+  const file = new File([blob], '语音消息.' + ext, { type: mime });
+  sendOneFile(file, { voice: true, duration });
 }
 
 /* ---------------- 网络自检 ---------------- */
@@ -1096,6 +1324,8 @@ function autosize() {
 
 function leave() {
   state.leaving = true;
+  if (state.recording) { try { stopRecording(); } catch (e) { /* noop */ } }
+  if (state.inCall || state.calling) { try { endCall(); } catch (e) { /* noop */ } }
   if (isOpen()) {
     try { state.conn.send(JSON.stringify({ t: 'bye' })); } catch (e) { /* noop */ }
   }
@@ -1145,6 +1375,19 @@ el.fileInput.addEventListener('change', () => {
 });
 
 el.btnLeave.addEventListener('click', leave);
+
+// 语音通话
+el.btnCall.addEventListener('click', () => {
+  if (state.inCall || state.calling) endCall();
+  else startCall();
+});
+el.btnHangup.addEventListener('click', endCall);
+
+// 语音消息（点击开始 / 点击停止）
+el.btnVoice.addEventListener('click', () => {
+  if (state.recording) stopRecording();
+  else startRecording();
+});
 
 el.btnDiag.addEventListener('click', runDiagnostics);
 el.diagClose.addEventListener('click', () => el.diagPanel.classList.add('hidden'));

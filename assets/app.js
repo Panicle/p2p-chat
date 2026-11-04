@@ -6,6 +6,9 @@ const MAX_BUFFERED = 4 * 1024 * 1024;
 // 法国教育部孵化器共享的 WebRTC 基础设施（公开共享账号，无需自建服务器）
 // 信令：peer.incubateur.education.gouv.fr （PeerJS）
 // TURN：turn.incubateur.education.gouv.fr （UDP + TLS/TCP，用于跨 NAT 中继）
+const TURN_FR = { username: 'prof', credential: 'Q!TzBTIeKY1W51bn2WnajpO1' };
+const TURN_OR = { username: 'openrelayproject', credential: 'openrelayproject' };
+
 const PEER_OPTS = {
   host: 'peer.incubateur.education.gouv.fr',
   port: 443,
@@ -20,16 +23,37 @@ const PEER_OPTS = {
           'turn:turn.incubateur.education.gouv.fr:443?transport=udp',
           'turns:turn.incubateur.education.gouv.fr:443?transport=tcp'
         ],
-        username: 'prof',
-        credential: 'Q!TzBTIeKY1W51bn2WnajpO1'
+        username: TURN_FR.username,
+        credential: TURN_FR.credential
       },
       // 备用 TURN（Open Relay 静态账号，可能被限流，仅作兜底）
-      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+      { urls: 'turn:openrelay.metered.ca:80', username: TURN_OR.username, credential: TURN_OR.credential },
+      { urls: 'turn:openrelay.metered.ca:443', username: TURN_OR.username, credential: TURN_OR.credential },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: TURN_OR.username, credential: TURN_OR.credential }
     ]
   }
 };
+
+// 自检时逐个测试的服务器，方便看出到底哪条路不通
+const PROBE_TARGETS = [
+  { label: 'STUN · Google', servers: [{ urls: 'stun:stun.l.google.com:19302' }] },
+  {
+    label: 'TURN · 教育网 UDP 443',
+    servers: [{ urls: 'turn:turn.incubateur.education.gouv.fr:443?transport=udp', username: TURN_FR.username, credential: TURN_FR.credential }]
+  },
+  {
+    label: 'TURN · 教育网 TLS 443',
+    servers: [{ urls: 'turns:turn.incubateur.education.gouv.fr:443?transport=tcp', username: TURN_FR.username, credential: TURN_FR.credential }]
+  },
+  {
+    label: 'TURN · Open Relay UDP 80',
+    servers: [{ urls: 'turn:openrelay.metered.ca:80', username: TURN_OR.username, credential: TURN_OR.credential }]
+  },
+  {
+    label: 'TURN · Open Relay TCP 443',
+    servers: [{ urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: TURN_OR.username, credential: TURN_OR.credential }]
+  }
+];
 
 // 进入密码：双方必须输入正确密码才能创建或加入会话
 // 注意：这是纯前端校验，密码写在源码里，查看网页源码即可看到。
@@ -917,15 +941,15 @@ function testSignalServer() {
   });
 }
 
-// 收集本机能拿到的 ICE 候选，判断是否有中继
-function probeIce() {
+// 用指定的 ICE 服务器收集候选，看能不能拿到中继
+function probeIceWith(servers, timeout) {
   return new Promise((resolve) => {
     const counts = { host: 0, srflx: 0, relay: 0, prflx: 0 };
     const seen = new Set();
 
     let pc;
     try {
-      pc = new RTCPeerConnection({ iceServers: PEER_OPTS.config.iceServers });
+      pc = new RTCPeerConnection({ iceServers: servers });
     } catch (e) {
       resolve({ counts, error: e.message });
       return;
@@ -939,59 +963,52 @@ function probeIce() {
       counts[t] = (counts[t] || 0) + 1;
     };
 
-    let failed = null;
     try {
       pc.createDataChannel('probe');
       pc.createOffer()
         .then((offer) => pc.setLocalDescription(offer))
-        .catch((e) => { failed = e.message; });
-    } catch (e) {
-      failed = e.message;
-    }
+        .catch(() => { /* noop */ });
+    } catch (e) { /* noop */ }
 
     setTimeout(() => {
       try { pc.close(); } catch (e) { /* noop */ }
-      resolve({ counts, error: failed });
-    }, 9000);
+      resolve({ counts, error: null });
+    }, timeout);
   });
 }
 
-function renderDiagResult(sig, ice) {
-  const c = ice.counts;
-  const total = c.host + c.srflx + c.relay + c.prflx;
+function renderDiagResult(sig, results) {
+  const anyRelay = results.some((r) => r.counts.relay > 0);
+
+  const rows = results.map((r) => {
+    const c = r.counts;
+    const tag = c.relay > 0
+      ? '<b class="diag-ok">中继 ' + c.relay + ' 可用</b>'
+      : (c.srflx > 0 ? '仅公网映射，无中继' : '不可用');
+    return '<p class="diag-line">' + r.label + '：' + tag + '</p>';
+  }).join('');
 
   let verdict;
   let kind;
 
   if (!sig.ok) {
     kind = 'bad';
-    verdict = '信令服务器连不上（' + (sig.err || '未知') + '）。两端无法互相找到，任何设置都白搭。' +
-      '请确认网络没有拦截 wss://peer.incubateur.education.gouv.fr，必要时换个网络再试。';
-  } else if (c.relay > 0) {
+    verdict = '信令服务器连不上（' + (sig.err || '未知') + '）。两端无法互相找到，其他配置再好也没用。' +
+      '请确认网络没有拦截 wss://peer.incubateur.education.gouv.fr。';
+  } else if (anyRelay) {
     kind = 'ok';
-    verdict = '信令与中继都正常。跨网络应该能连上。如果实际仍连不上，' +
-      '请确认两端输入的是同一个密码、且一端点「创建会话」、另一端点「加入会话」。';
-  } else if (c.srflx > 0) {
-    kind = 'bad';
-    verdict = '信令正常，但没有拿到中继（relay = 0），说明 TURN 服务器不可用。' +
-      '同一局域网内可能能连；手机流量和家宽这种跨网络场景会失败。';
-  } else if (total === 0) {
-    kind = 'bad';
-    verdict = '一个 ICE 候选都没拿到，浏览器或网络把 WebRTC 完全限制了。' +
-      '请检查是否开了代理、企业防火墙或隐私插件。';
+    verdict = '信令与至少一条中继可用。如果仍连不上，可能是路由器开了「AP 隔离」' +
+      '（同一 WiFi 下设备互不相通），可尝试用手机流量与电脑互连。';
   } else {
     kind = 'bad';
-    verdict = '只有本机直连候选，既没有公网映射也没有中继，跨网络无法连接。';
+    verdict = '信令通，但所有中继都失败（中继全部为 0）。这意味着跨网络无法建立连接。' +
+      '需要换一个在你网络中可用的 TURN 服务器。';
   }
 
   el.diagBody.innerHTML =
     '<p class="diag-line">信令服务器：<b>' +
     (sig.ok ? '连通 ' + sig.ms + ' ms' : '失败（' + (sig.err || '未知') + '）') +
-    '</b></p>' +
-    '<p class="diag-line">直连候选 host：<b>' + c.host + '</b></p>' +
-    '<p class="diag-line">公网映射 srflx：<b>' + c.srflx + '</b></p>' +
-    '<p class="diag-line">中继 relay：<b>' + c.relay + '</b></p>' +
-    (ice.error ? '<p class="diag-line">探测异常：' + ice.error + '</p>' : '') +
+    '</b></p>' + rows +
     '<p class="diag-verdict ' + kind + '">' + verdict + '</p>';
 }
 
@@ -1001,10 +1018,14 @@ async function runDiagnostics() {
 
   const sig = await testSignalServer();
 
-  el.diagBody.textContent = '正在收集网络候选（约 9 秒）…';
-  const ice = await probeIce();
+  el.diagBody.textContent = '正在逐个测试中继服务器（约 8 秒）…';
+  const results = await Promise.all(
+    PROBE_TARGETS.map((t) =>
+      probeIceWith(t.servers, 8000).then((r) => ({ label: t.label, counts: r.counts }))
+    )
+  );
 
-  renderDiagResult(sig, ice);
+  renderDiagResult(sig, results);
 }
 
 /* ---------------- 交互绑定 ---------------- */

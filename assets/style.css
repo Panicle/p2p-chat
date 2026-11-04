@@ -299,6 +299,8 @@ body {
 .diag-line { margin: 0 0 4px; }
 .diag-line b { color: var(--text); font-variant-numeric: tabular-nums; }
 
+.diag-ok { color: #7ef0bb; }
+
 .diag-verdict {
   margin: 12px 0 0;
   padding: 10px 12px;

@@ -122,7 +122,9 @@ const state = {
   incoming: null,
   guestTries: 0,
   retryTimer: null,
-  leaving: false
+  leaving: false,
+  promoting: false,
+  promoteCount: 0
 };
 
 const SESSION_KEY = 'p2p-chat-session';
@@ -405,7 +407,7 @@ function wirePeer(peer) {
 
   peer.on('disconnected', () => {
     dlog('signaling disconnected');
-    if (state.leaving) return;
+    if (state.leaving || state.promoting) return;
     setStatus('warn', '信令断开，正在重连…');
     try { peer.reconnect(); } catch (e) { /* noop */ }
   });
@@ -490,20 +492,25 @@ function closeConn() {
   }
 }
 
-const MAX_TRIES = 5;
-const RETRY_MS = 8000;
+const MAX_TRIES = 4;
+const RETRY_MS = 6000;
+const MAX_PROMOTE = 6;
 
 function guestConnect() {
-  if (state.connected || state.leaving) return;
+  if (state.connected || state.leaving || state.promoting) return;
   if (state.guestTries >= MAX_TRIES) {
-    setStatus('warn', '未找到对方');
-    systemMsg('连接超时：请确认会话码正确，且对方页面保持打开');
+    // 一直找不到对方：可能两端都退成了接入方（房间 ID 还没释放），
+    // 尝试反转成发起方，把死锁解开
+    attemptPromote();
     return;
   }
   state.guestTries++;
 
   closeConn();
-  if (!state.peer || state.peer.destroyed) return;
+  if (!state.peer || state.peer.destroyed) {
+    attemptPromote();
+    return;
+  }
 
   const conn = state.peer.connect(state.room, {
     reliable: true,
@@ -516,6 +523,56 @@ function guestConnect() {
   state.retryTimer = setTimeout(() => {
     if (!state.connected && !state.leaving) guestConnect();
   }, RETRY_MS);
+}
+
+// 接入方长时间连不上时，反过来抢占房间当发起方；抢不到就恢复接入继续试
+async function attemptPromote() {
+  if (state.promoting || state.leaving || state.connected) return;
+  if (state.role !== 'guest') return;
+  if (state.promoteCount >= MAX_PROMOTE) {
+    setStatus('warn', '未找到对方');
+    systemMsg('连接超时：请确认对方也在同一页面并输入了相同密码；可点右上角「离开会话」后重新进入');
+    return;
+  }
+  state.promoteCount++;
+  state.promoting = true;
+  dlog('promote attempt', state.promoteCount);
+  setStatus('wait', '正在尝试重新建立连接…');
+
+  const roomId = state.room;
+  closeConn();
+  clearTimeout(state.retryTimer);
+  state.retryTimer = null;
+  if (state.peer && !state.peer.destroyed) {
+    try { state.peer.destroy(); } catch (e) { /* noop */ }
+  }
+  state.peer = null;
+
+  state.role = 'host';
+  try {
+    await openHost(roomId);
+    saveSession();
+    state.guestTries = 0;
+    setStatus('idle', '等待对方进入');
+    systemMsg('已切换为发起方，等待对方接入');
+    state.promoting = false;
+    return;
+  } catch (e) {
+    dlog('promote failed', e.code || e.message);
+  }
+
+  // 抢不到（房间确实被对方占着），回到接入方继续尝试
+  state.role = 'guest';
+  try {
+    await openGuest();
+    state.guestTries = 0;
+    state.promoting = false;
+    setStatus('wait', '正在连接对方…');
+    guestConnect();
+  } catch (e) {
+    state.promoting = false;
+    setStatus('warn', '连接失败');
+  }
 }
 
 /* ---------------- 入口 ---------------- */
@@ -557,6 +614,8 @@ async function joinRoom(roomId) {
     await openGuest();
     state.room = roomId;
     state.role = 'guest';
+    state.guestTries = 0;
+    state.promoteCount = 0;
     enterChat();
     setStatus('wait', '正在连接对方…');
     guestConnect();

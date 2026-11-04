@@ -926,7 +926,7 @@ function onControl(msg) {
 
 /* ---------------- 消息提醒 ---------------- */
 
-const BASE_TITLE = document.title;
+const BASE_TITLE = document.title || '快乐聊天';
 let unread = 0;
 let audioCtx = null;
 

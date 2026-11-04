@@ -148,12 +148,12 @@ function dlog(...args) {
 }
 
 function loadSession() {
-  try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { return null; }
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { return null; }
 }
 
 function saveSession() {
   try {
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
       room: state.room,
       role: state.role,
       token: sessionToken
@@ -162,7 +162,7 @@ function saveSession() {
 }
 
 function clearSession() {
-  try { sessionStorage.removeItem(SESSION_KEY); } catch (e) { /* noop */ }
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* noop */ }
 }
 
 /* ---------------- 本地历史持久化 ---------------- */
@@ -1600,7 +1600,7 @@ el.msgInput.addEventListener('paste', (e) => {
   }
 });
 
-// 恢复会话：刷新页面后仍停留在原会话（sessionStorage 按标签页隔离）
+// 恢复会话：刷新/关标签页重开都能自动回到原会话（localStorage 跨标签页持久）
 (async function init() {
   const saved = loadSession();
 

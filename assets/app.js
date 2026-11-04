@@ -31,8 +31,10 @@ const PEER_OPTS = {
   }
 };
 
-// 固定房间码：仅存在于代码中，界面上不显示、不输入，双方凭约定进入同一会话
-const FIXED_ROOM = 'XT8A2M';
+// 进入密码：双方必须输入正确密码才能创建或加入会话
+// 注意：这是纯前端校验，密码写在源码里，查看网页源码即可看到。
+// 它的作用是防止误入，以及让不知道密码的人无法推算出房间 ID。
+const ROOM_PASS = 'XT8A2M';
 
 // 撤回时限：发出后 2 分钟内可撤回
 const RECALL_WINDOW = 2 * 60 * 1000;
@@ -62,14 +64,14 @@ const AVATARS = [
   }
 ];
 
-const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
 const $ = (sel, root = document) => root.querySelector(sel);
 
 const el = {
   landing: $('#landing'),
   chat: $('#chat'),
   topbar: $('#topbar'),
+  passInput: $('#pass-input'),
+  passError: $('#pass-error'),
   btnCreate: $('#btn-create'),
   btnJoin: $('#btn-join'),
   peerAvatar: $('#peer-avatar'),
@@ -139,17 +141,86 @@ function randomId(len = 12) {
   return out;
 }
 
-function genCode() {
-  const buf = new Uint32Array(6);
-  crypto.getRandomValues(buf);
-  let code = '';
-  for (let i = 0; i < 6; i++) code += CODE_ALPHABET[buf[i] % CODE_ALPHABET.length];
-  return code;
+// 标准 SHA-256（纯 JS 实现）
+// 之所以不用 crypto.subtle：它在非安全上下文（http、file://）下不可用，
+// 会导致本地打开或某些受限环境直接失效。
+function sha256Hex(str) {
+  const K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ];
+  const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+
+  // UTF-8 编码
+  const bytes = [];
+  for (let i = 0; i < str.length; i++) {
+    let c = str.charCodeAt(i);
+    if (c < 0x80) {
+      bytes.push(c);
+    } else if (c < 0x800) {
+      bytes.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+    } else if (c < 0xd800 || c >= 0xe000) {
+      bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+    } else {
+      i++;
+      c = 0x10000 + (((c & 0x3ff) << 10) | (str.charCodeAt(i) & 0x3ff));
+      bytes.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+    }
+  }
+
+  const bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  bytes.push(0, 0, 0, 0,
+    (bitLen >>> 24) & 255, (bitLen >>> 16) & 255, (bitLen >>> 8) & 255, bitLen & 255);
+
+  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+  const W = new Array(64);
+
+  for (let off = 0; off < bytes.length; off += 64) {
+    for (let t = 0; t < 16; t++) {
+      const p = off + t * 4;
+      W[t] = (bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3];
+    }
+    for (let t = 16; t < 64; t++) {
+      const s0 = rotr(W[t - 15], 7) ^ rotr(W[t - 15], 18) ^ (W[t - 15] >>> 3);
+      const s1 = rotr(W[t - 2], 17) ^ rotr(W[t - 2], 19) ^ (W[t - 2] >>> 10);
+      W[t] = (W[t - 16] + s0 + W[t - 7] + s1) | 0;
+    }
+
+    let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+
+    for (let t = 0; t < 64; t++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[t] + W[t]) | 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) | 0;
+
+      h = g; g = f; f = e; e = (d + t1) | 0;
+      d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+
+    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0;
+    H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0;
+    H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+  }
+
+  return H.map((x) => (x >>> 0).toString(16).padStart(8, '0')).join('');
 }
 
-// 会话码 -> 固定的信令 ID，双方无需交换 ID
-function hostIdFor(code) {
-  return 'p2pchat' + code.toLowerCase() + 'h';
+// 由密码派生房间 ID：不知道密码就无法推算出信令 ID，也就连不进这个房间
+function roomIdFor(pass) {
+  const hex = sha256Hex('p2p-chat-room-v1|' + pass.trim().toUpperCase());
+  return 'p2pchat' + hex.slice(0, 20) + 'h';
 }
 
 function fmtSize(n) {
@@ -227,9 +298,9 @@ function toSignalError(err) {
   return e;
 }
 
-function openHost(code) {
+function openHost(roomId) {
   return new Promise((resolve, reject) => {
-    const peer = new Peer(hostIdFor(code), Object.assign({}, PEER_OPTS, { token: ensureToken() }));
+    const peer = new Peer(roomId, Object.assign({}, PEER_OPTS, { token: ensureToken() }));
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -244,7 +315,7 @@ function openHost(code) {
       clearTimeout(timer);
       state.peer = peer;
       wirePeer(peer);
-      dlog('host open', hostIdFor(code));
+      dlog('host open', roomId);
       resolve();
     });
 
@@ -408,12 +479,12 @@ function guestConnect() {
   closeConn();
   if (!state.peer || state.peer.destroyed) return;
 
-  const conn = state.peer.connect(hostIdFor(state.room), {
+  const conn = state.peer.connect(state.room, {
     reliable: true,
     serialization: 'raw'
   });
   attach(conn);
-  dlog('guest connect try', state.guestTries, '->', hostIdFor(state.room));
+  dlog('guest connect try', state.guestTries, '->', state.room);
 
   clearTimeout(state.retryTimer);
   state.retryTimer = setTimeout(() => {
@@ -423,33 +494,25 @@ function guestConnect() {
 
 /* ---------------- 入口 ---------------- */
 
-async function createRoom() {
+async function createRoom(roomId) {
   el.btnCreate.disabled = true;
   try {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const code = FIXED_ROOM || genCode();
-      // 先把角色设为主机，确保 openHost 内部注册的 connection 监听不会因 role 还没赋值而丢弃连接
-      state.room = code;
-      state.role = 'host';
-      try {
-        await openHost(code);
-        enterChat();
-        setStatus('idle', '等待对方加入');
+    // 先把角色设为主机，确保 openHost 内部注册的 connection 监听不会因 role 还没赋值而丢弃连接
+    state.room = roomId;
+    state.role = 'host';
+    try {
+      await openHost(roomId);
+      enterChat();
+      setStatus('idle', '等待对方加入');
+    } catch (e) {
+      if (e.code === 'unavailable-id') {
+        // 房间已被对方占为主机，直接转为加入
+        state.role = null;
+        joinRoom(roomId);
         return;
-      } catch (e) {
-        if (e.code === 'unavailable-id') {
-          if (FIXED_ROOM) {
-            // 固定房间已被占用，说明对方已作为主机存在，转而去加入
-            state.role = null;
-            joinRoom(FIXED_ROOM);
-            return;
-          }
-          continue;
-        }
-        throw e;
       }
+      throw e;
     }
-    throw new Error('会话码连续冲突，请重试');
   } catch (e) {
     alert(e.message);
   } finally {
@@ -457,14 +520,10 @@ async function createRoom() {
   }
 }
 
-async function joinRoom(code) {
-  if (!/^[A-Z2-9]{6}$/.test(code)) {
-    alert('请输入 6 位会话码');
-    return;
-  }
+async function joinRoom(roomId) {
   try {
     await openGuest();
-    state.room = code;
+    state.room = roomId;
     state.role = 'guest';
     enterChat();
     setStatus('wait', '正在连接对方…');
@@ -472,6 +531,26 @@ async function joinRoom(code) {
   } catch (e) {
     alert(e.message);
   }
+}
+
+function showPassError() {
+  el.passError.classList.remove('hidden');
+  el.passInput.classList.add('invalid');
+  el.passInput.focus();
+  el.passInput.select();
+}
+
+// 校验密码后再进入：创建 / 加入共用同一道门
+function enterSession(action) {
+  const pass = el.passInput.value.trim().toUpperCase();
+  if (pass !== ROOM_PASS) {
+    showPassError();
+    return;
+  }
+  el.passError.classList.add('hidden');
+  el.passInput.classList.remove('invalid');
+  el.passInput.blur();
+  action(roomIdFor(pass));
 }
 
 function enterChat() {
@@ -812,8 +891,20 @@ function leave() {
   location.reload();
 }
 
-el.btnCreate.addEventListener('click', createRoom);
-el.btnJoin.addEventListener('click', () => joinRoom(FIXED_ROOM));
+el.btnCreate.addEventListener('click', () => enterSession(createRoom));
+el.btnJoin.addEventListener('click', () => enterSession(joinRoom));
+
+el.passInput.addEventListener('input', () => {
+  el.passError.classList.add('hidden');
+  el.passInput.classList.remove('invalid');
+});
+
+el.passInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    enterSession(createRoom);
+  }
+});
 
 el.btnSend.addEventListener('click', sendText);
 
@@ -878,7 +969,7 @@ el.msgInput.addEventListener('paste', (e) => {
 (async function init() {
   const saved = loadSession();
 
-  if (saved && /^[A-Z2-9]{6}$/.test(saved.room || '') &&
+  if (saved && /^[a-z0-9]{8,64}$/.test(saved.room || '') &&
       (saved.role === 'host' || saved.role === 'guest')) {
     state.room = saved.room;
     state.role = saved.role;

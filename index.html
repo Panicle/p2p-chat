@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#080b10">
 <title>直连聊天 · P2P</title>
-<link rel="stylesheet" href="assets/style.css?v=4">
+<link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
 <div id="app">
@@ -23,11 +23,15 @@
         <p class="sub">点对点 · 端到端加密 · 内容不经过服务器</p>
       </div>
 
-      <button id="btn-create" class="btn primary">创建会话</button>
-
-      <div class="divider"><span>或</span></div>
-
-      <button id="btn-join" class="btn secondary">加入会话</button>
+      <form id="entry-form" class="entry" autocomplete="off">
+        <input id="pass-input" type="password" placeholder="请输入进入密码" maxlength="24"
+               spellcheck="false" autocapitalize="off" autocomplete="new-password">
+        <p class="pass-error hidden" id="pass-error">密码错误，请重新输入</p>
+        <div class="entry-btns">
+          <button id="btn-create" class="btn primary" type="button">创建会话</button>
+          <button id="btn-join" class="btn secondary" type="button">加入会话</button>
+        </div>
+      </form>
 
       <div class="avatars">
         <span class="avatar-tag"><span class="avatar" data-avatar="0"></span>发起方</span>
@@ -35,7 +39,7 @@
       </div>
 
       <p class="hint">
-        会话码已内置，无需输入。一方点击「创建会话」，另一方点击「加入会话」即可连接。
+        双方输入正确密码后，一方点击「创建会话」，另一方点击「加入会话」即可连接。
         文字与文件在两台设备之间直接传输，服务器只交换连接信息，不保存任何聊天内容。
       </p>
     </div>
@@ -84,7 +88,7 @@
   </section>
 
 </div>
-<script src="assets/peerjs.min.js?v=4"></script>
-<script src="assets/app.js?v=4"></script>
+<script src="assets/peerjs.min.js?v=6"></script>
+<script src="assets/app.js?v=6"></script>
 </body>
 </html>

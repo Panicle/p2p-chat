@@ -3,21 +3,37 @@
 const CHUNK_SIZE = 16 * 1024;
 const MAX_BUFFERED = 4 * 1024 * 1024;
 
-// 免费公共信令服务（PeerJS Cloud）：只转发 SDP / ICE，不接触聊天内容
+// 法国教育部孵化器共享的 WebRTC 基础设施（公开共享账号，无需自建服务器）
+// 信令：peer.incubateur.education.gouv.fr （PeerJS）
+// TURN：turn.incubateur.education.gouv.fr （UDP + TLS/TCP，用于跨 NAT 中继）
 const PEER_OPTS = {
-  host: '0.peerjs.com',
+  host: 'peer.incubateur.education.gouv.fr',
   port: 443,
+  path: '/peerjs',
   secure: true,
-  key: 'peerjs',
+  key: 'd9352f15a0286310f438a4985fcd6fcf',
   config: {
     iceServers: [
       { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+      {
+        urls: [
+          'turn:turn.incubateur.education.gouv.fr:443?transport=udp',
+          'turns:turn.incubateur.education.gouv.fr:443?transport=tcp'
+        ],
+        username: 'prof',
+        credential: 'Q!TzBTIeKY1W51bn2WnajpO1'
+      },
+      // 备用 TURN（Open Relay 静态账号，可能被限流，仅作兜底）
       { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
       { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
       { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
     ]
   }
 };
+
+// 固定房间码：设为非空后，会话码将锁定为该值，双方无需每次交换
+// 留空 '' 则恢复为随机 6 位码
+const FIXED_ROOM = 'XT8A2M';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -360,7 +376,7 @@ async function createRoom() {
   el.btnCreate.disabled = true;
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const code = genCode();
+      const code = FIXED_ROOM || genCode();
       try {
         await openHost(code);
         state.room = code;
@@ -369,7 +385,15 @@ async function createRoom() {
         setStatus('idle', '等待对方加入');
         return;
       } catch (e) {
-        if (e.code === 'unavailable-id') continue;
+        if (e.code === 'unavailable-id') {
+          if (FIXED_ROOM) {
+            // 固定房间已被占用，说明对方已作为主机存在，转而去加入
+            state.role = null;
+            joinRoom(FIXED_ROOM);
+            return;
+          }
+          continue;
+        }
         throw e;
       }
     }
@@ -679,7 +703,7 @@ el.btnCreate.addEventListener('click', createRoom);
 
 el.joinForm.addEventListener('submit', (e) => {
   e.preventDefault();
-  joinRoom(el.codeInput.value.trim().toUpperCase());
+  joinRoom(FIXED_ROOM || el.codeInput.value.trim().toUpperCase());
 });
 
 el.codeInput.addEventListener('input', () => {
@@ -776,9 +800,16 @@ el.msgInput.addEventListener('paste', (e) => {
     return;
   }
 
-  const m = location.hash.match(/#r=([A-Z0-9]{6})/i);
-  if (m) {
-    el.codeInput.value = m[1].toUpperCase();
-    el.codeInput.focus();
+  // 固定房间码：锁定输入框，创建/加入都用同一个码
+  if (FIXED_ROOM) {
+    el.codeInput.value = FIXED_ROOM;
+    el.codeInput.readOnly = true;
+    el.codeInput.classList.add('readonly');
+  } else {
+    const m = location.hash.match(/#r=([A-Z0-9]{6})/i);
+    if (m) {
+      el.codeInput.value = m[1].toUpperCase();
+      el.codeInput.focus();
+    }
   }
 })();

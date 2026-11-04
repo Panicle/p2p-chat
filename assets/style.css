@@ -170,6 +170,14 @@ body {
   box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.15);
 }
 
+.join-row input.readonly {
+  cursor: default;
+  background: rgba(91, 140, 255, 0.08);
+  border-color: rgba(91, 140, 255, 0.35);
+  color: var(--accent, #9db8ff);
+  user-select: all;
+}
+
 .hint {
   margin: 20px 0 0;
   font-size: 12px;

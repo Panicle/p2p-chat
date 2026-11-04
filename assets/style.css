@@ -576,6 +576,8 @@ body {
 .file-status { font-size: 11px; color: var(--muted); }
 .msg.me .file-status { color: rgba(255, 255, 255, 0.62); }
 
+.file-expired { font-size: 11px; color: var(--muted); font-style: italic; margin-top: 4px; }
+
 .thumb {
   display: block;
   max-width: 100%;

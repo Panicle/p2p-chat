@@ -165,6 +165,92 @@ function clearSession() {
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) { /* noop */ }
 }
 
+/* ---------------- 本地历史持久化 ---------------- */
+// 用 localStorage 把消息按房间存下来，刷新不丢
+// 存文字 + 撤回状态 + 文件元数据（文件二进制 blob 在刷新后不可恢复，文件会显示"已过期"）
+
+const HISTORY_KEY_PREFIX = 'p2p-chat-history|';
+const MAX_HISTORY = 500; // 每个房间最多保留 500 条
+
+function historyKey(roomId) {
+  return HISTORY_KEY_PREFIX + (roomId || state.room || '');
+}
+
+function loadHistory(roomId) {
+  try {
+    const raw = localStorage.getItem(historyKey(roomId));
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+
+function saveHistory(append) {
+  try {
+    const arr = loadHistory();
+    const items = Array.isArray(append) ? append : [append];
+    for (const item of items) {
+      const existIdx = arr.findIndex(m => m.id === item.id);
+      if (existIdx >= 0) arr[existIdx] = Object.assign({}, arr[existIdx], item);
+      else arr.push(item);
+    }
+    arr.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    if (arr.length > MAX_HISTORY) arr.splice(0, arr.length - MAX_HISTORY);
+    localStorage.setItem(historyKey(), JSON.stringify(arr));
+  } catch (e) { /* localStorage 被禁用或超限，静默忽略 */ }
+}
+
+function renderHistory() {
+  const list = loadHistory(state.room);
+  if (!list.length) return;
+  for (const rec of list) {
+    if (rec.t === 'text') {
+      const who = rec.who === 'me' ? 'me' : 'peer';
+      addText(who, rec.text, rec.ts, rec.id, true);
+      if (rec.recalled) {
+        const row = findMessageRow(rec.id);
+        if (row) markRecalled(row, who === 'me');
+      }
+    } else if (rec.t === 'file') {
+      renderFileMetaFromHistory(rec);
+    }
+  }
+  el.emptyState.classList.add('hidden');
+}
+
+// 历史里的文件只显示元信息，blob URL 已失效
+function renderFileMetaFromHistory(rec) {
+  const mine = rec.who === 'me';
+  const row = document.createElement('div');
+  row.className = 'msg ' + (mine ? 'me' : 'peer');
+  if (rec.id) row.dataset.id = rec.id;
+  if (!mine) row.appendChild(makeAvatar('peer'));
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble file';
+
+  const head = document.createElement('div');
+  head.className = 'file-head';
+  const name = document.createElement('div');
+  name.className = 'file-name';
+  name.textContent = rec.meta && rec.meta.voice ? '语音消息' : (rec.meta && rec.meta.name) || '文件';
+  const size = document.createElement('div');
+  size.className = 'file-size';
+  size.textContent = rec.meta && rec.meta.voice
+    ? fmtDuration(rec.meta.duration || 0)
+    : fmtSize(rec.meta && rec.meta.size || 0);
+  head.append(name, size);
+
+  const tip = document.createElement('div');
+  tip.className = 'file-expired';
+  tip.textContent = '文件内容已过期（仅本地暂存）';
+
+  bubble.append(head, tip);
+  row.appendChild(bubble);
+  if (mine) row.appendChild(makeAvatar('me'));
+  append(row);
+}
+
 /* ---------------- 基础工具 ---------------- */
 
 function uid() {
@@ -669,8 +755,8 @@ async function tryEnter(focusOnError) {
 function enterChat() {
   el.landing.classList.add('hidden');
   el.chat.classList.remove('hidden');
-  if (state.role !== 'host') el.emptyState.classList.add('hidden');
   renderAvatars();
+  renderHistory();
   saveSession();
   requestNotifyPermission();
   el.msgInput.focus();
@@ -696,7 +782,7 @@ function sendText() {
   autosize();
 }
 
-function addText(who, text, ts, id) {
+function addText(who, text, ts, id, skipSave) {
   const mine = who === 'me';
 
   const row = document.createElement('div');
@@ -737,6 +823,10 @@ function addText(who, text, ts, id) {
   if (mine) row.appendChild(makeAvatar('me'));
 
   append(row);
+
+  if (!skipSave && id) {
+    saveHistory({ t: 'text', who, id, text, ts: ts || Date.now(), recalled: false });
+  }
 }
 
 // 2 分钟一到，撤回按钮自动消失
@@ -765,6 +855,7 @@ function recallMessage(id) {
     } catch (e) { /* noop */ }
   }
   markRecalled(row, true);
+  saveHistory({ id, recalled: true });
 }
 
 function markRecalled(row, mine) {
@@ -806,6 +897,7 @@ function onControl(msg) {
   } else if (msg.t === 'recall') {
     const row = findMessageRow(msg.id);
     if (row) markRecalled(row, false);
+    saveHistory({ id: msg.id, recalled: true });
   } else if (msg.t === 'file-start') {
     if (state.incoming) state.incoming = null;
     const meta = {
@@ -1045,6 +1137,7 @@ async function sendOneFile(file, opts = {}) {
     state.conn.send(JSON.stringify({ t: 'file-end', id }));
   }
   finishFile(node, URL.createObjectURL(file), true);
+  saveHistory({ t: 'file', who: 'me', id, meta, ts: Date.now() });
 }
 
 async function sendFiles(files) {
@@ -1076,6 +1169,7 @@ function finishIncoming() {
   state.incoming = null;
   const blob = new Blob(inc.chunks, { type: inc.meta.mime });
   finishFile(inc.node, URL.createObjectURL(blob), false);
+  saveHistory({ t: 'file', who: 'peer', id: inc.id, meta: inc.meta, ts: Date.now() });
 }
 
 /* ---------------- 实时语音通话 ---------------- */

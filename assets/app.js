@@ -31,9 +31,36 @@ const PEER_OPTS = {
   }
 };
 
-// 固定房间码：设为非空后，会话码将锁定为该值，双方无需每次交换
-// 留空 '' 则恢复为随机 6 位码
+// 固定房间码：仅存在于代码中，界面上不显示、不输入，双方凭约定进入同一会话
 const FIXED_ROOM = 'XT8A2M';
+
+// 撤回时限：发出后 2 分钟内可撤回
+const RECALL_WINDOW = 2 * 60 * 1000;
+
+// 两个固定头像（内联 SVG，离线可用，不依赖外部图片）
+// 0 = 发起方，1 = 加入方
+const AVATARS = [
+  {
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+      '<defs><linearGradient id="av0" x1="0" y1="0" x2="1" y2="1">' +
+      '<stop offset="0" stop-color="#5b8cff"/><stop offset="1" stop-color="#8a5bff"/>' +
+      '</linearGradient></defs>' +
+      '<rect width="64" height="64" rx="32" fill="url(#av0)"/>' +
+      '<circle cx="32" cy="25" r="10" fill="#fff" opacity="0.95"/>' +
+      '<path d="M13 55c2.7-10 9.6-15.5 19-15.5S48.3 45 51 55" fill="#fff" opacity="0.95"/>' +
+      '</svg>'
+  },
+  {
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+      '<defs><linearGradient id="av1" x1="0" y1="0" x2="1" y2="1">' +
+      '<stop offset="0" stop-color="#3ddc97"/><stop offset="1" stop-color="#2b9cff"/>' +
+      '</linearGradient></defs>' +
+      '<rect width="64" height="64" rx="32" fill="url(#av1)"/>' +
+      '<circle cx="32" cy="24" r="9.5" fill="#fff" opacity="0.95"/>' +
+      '<rect x="15" y="38" width="34" height="15" rx="7.5" fill="#fff" opacity="0.95"/>' +
+      '</svg>'
+  }
+];
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -42,21 +69,19 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const el = {
   landing: $('#landing'),
   chat: $('#chat'),
+  topbar: $('#topbar'),
   btnCreate: $('#btn-create'),
-  joinForm: $('#join-form'),
-  codeInput: $('#code-input'),
-  roomCode: $('#room-code'),
+  btnJoin: $('#btn-join'),
+  peerAvatar: $('#peer-avatar'),
   statusText: $('#status-text'),
   statusDot: $('#status-dot'),
   messages: $('#messages'),
   msgInput: $('#msg-input'),
   btnSend: $('#btn-send'),
   fileInput: $('#file-input'),
-  btnCopy: $('#btn-copy'),
   btnLeave: $('#btn-leave'),
   dropHint: $('#drop-hint'),
-  emptyState: $('#empty-state'),
-  emptyCode: $('#empty-code')
+  emptyState: $('#empty-state')
 };
 
 const state = {
@@ -156,6 +181,30 @@ function systemMsg(text) {
   d.className = 'sys';
   d.textContent = text;
   append(d);
+}
+
+/* ---------------- 头像 ---------------- */
+
+// 发起方固定用头像 0，加入方固定用头像 1
+function myAvatarIndex() {
+  return state.role === 'guest' ? 1 : 0;
+}
+
+function peerAvatarIndex() {
+  return state.role === 'guest' ? 0 : 1;
+}
+
+function makeAvatar(who) {
+  const span = document.createElement('span');
+  span.className = 'avatar';
+  const idx = who === 'me' ? myAvatarIndex() : peerAvatarIndex();
+  span.dataset.avatar = String(idx);
+  span.innerHTML = AVATARS[idx].svg;
+  return span;
+}
+
+function renderAvatars() {
+  el.peerAvatar.innerHTML = AVATARS[peerAvatarIndex()].svg;
 }
 
 /* ---------------- 信令与连接 ---------------- */
@@ -305,6 +354,7 @@ function onConnOpen(conn) {
   clearTimeout(state.retryTimer);
   state.retryTimer = null;
   setStatus('online', '已直连');
+  el.topbar.classList.add('connected');
   el.emptyState.classList.add('hidden');
   if (!state.announced) {
     state.announced = true;
@@ -317,6 +367,7 @@ function onConnClose(conn) {
   if (state.conn !== conn) return;
   state.connected = false;
   state.conn = null;
+  el.topbar.classList.remove('connected');
   if (state.leaving) return;
   setStatus('warn', '连接已断开');
   systemMsg('直连已断开');
@@ -426,9 +477,8 @@ async function joinRoom(code) {
 function enterChat() {
   el.landing.classList.add('hidden');
   el.chat.classList.remove('hidden');
-  el.roomCode.textContent = state.room;
-  el.emptyCode.textContent = state.room;
   if (state.role !== 'host') el.emptyState.classList.add('hidden');
+  renderAvatars();
   saveSession();
   el.msgInput.focus();
 }
@@ -448,26 +498,92 @@ function sendText() {
   }
   const msg = { t: 'text', id: uid(), text, ts: Date.now() };
   state.conn.send(JSON.stringify(msg));
-  addText('me', msg.text, msg.ts);
+  addText('me', msg.text, msg.ts, msg.id);
   el.msgInput.value = '';
   autosize();
 }
 
-function addText(who, text, ts) {
+function addText(who, text, ts, id) {
+  const mine = who === 'me';
+
   const row = document.createElement('div');
-  row.className = 'msg ' + (who === 'me' ? 'me' : 'peer');
+  row.className = 'msg ' + (mine ? 'me' : 'peer');
+  if (id) row.dataset.id = id;
+
+  if (!mine) row.appendChild(makeAvatar('peer'));
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
-  bubble.textContent = text;
+
+  const textSpan = document.createElement('span');
+  textSpan.className = 'text';
+  textSpan.textContent = text;
+  bubble.appendChild(textSpan);
+
+  const meta = document.createElement('span');
+  meta.className = 'meta';
 
   const time = document.createElement('span');
   time.className = 'time';
   time.textContent = fmtTime(ts);
-  bubble.appendChild(time);
+  meta.appendChild(time);
 
+  if (mine && id) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'recall';
+    btn.textContent = '撤回';
+    btn.addEventListener('click', () => recallMessage(id));
+    meta.appendChild(btn);
+    scheduleRecallExpiry(btn, ts);
+  }
+
+  bubble.appendChild(meta);
   row.appendChild(bubble);
+
+  if (mine) row.appendChild(makeAvatar('me'));
+
   append(row);
+}
+
+// 2 分钟一到，撤回按钮自动消失
+function scheduleRecallExpiry(btn, ts) {
+  const left = RECALL_WINDOW - (Date.now() - (ts || Date.now()));
+  if (left <= 0) {
+    btn.remove();
+    return;
+  }
+  setTimeout(() => {
+    if (btn.isConnected) btn.remove();
+  }, left);
+}
+
+function findMessageRow(id) {
+  return el.messages.querySelector('.msg[data-id="' + id + '"]');
+}
+
+function recallMessage(id) {
+  if (!id) return;
+  const row = findMessageRow(id);
+  if (!row) return;
+  if (isOpen()) {
+    try {
+      state.conn.send(JSON.stringify({ t: 'recall', id }));
+    } catch (e) { /* noop */ }
+  }
+  markRecalled(row, true);
+}
+
+function markRecalled(row, mine) {
+  const bubble = row.querySelector('.bubble');
+  if (!bubble) return;
+  bubble.innerHTML = '';
+  bubble.className = 'bubble recalled';
+  const tip = document.createElement('span');
+  tip.className = 'recall-tip';
+  tip.textContent = mine ? '你撤回了一条消息' : '对方撤回了一条消息';
+  bubble.appendChild(tip);
+  row.classList.add('recalled');
 }
 
 function onData(data) {
@@ -492,7 +608,10 @@ function onData(data) {
 
 function onControl(msg) {
   if (msg.t === 'text') {
-    addText('peer', msg.text, msg.ts);
+    addText('peer', msg.text, msg.ts, msg.id);
+  } else if (msg.t === 'recall') {
+    const row = findMessageRow(msg.id);
+    if (row) markRecalled(row, false);
   } else if (msg.t === 'file-start') {
     if (state.incoming) state.incoming = null;
     const meta = {
@@ -519,8 +638,12 @@ function onControl(msg) {
 /* ---------------- 文件传输 ---------------- */
 
 function createFileBubble(who, meta, outgoing) {
+  const mine = who === 'me';
+
   const row = document.createElement('div');
-  row.className = 'msg ' + (who === 'me' ? 'me' : 'peer');
+  row.className = 'msg ' + (mine ? 'me' : 'peer');
+
+  if (!mine) row.appendChild(makeAvatar('peer'));
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble file';
@@ -549,6 +672,7 @@ function createFileBubble(who, meta, outgoing) {
 
   bubble.append(head, bar, status);
   row.appendChild(bubble);
+  if (mine) row.appendChild(makeAvatar('me'));
   append(row);
 
   return {
@@ -674,18 +798,6 @@ function autosize() {
   el.msgInput.style.height = Math.min(el.msgInput.scrollHeight, 120) + 'px';
 }
 
-async function copyInvite() {
-  const link = location.origin + location.pathname + '#r=' + state.room;
-  try {
-    await navigator.clipboard.writeText(link);
-    el.btnCopy.title = '已复制';
-    systemMsg('邀请链接已复制，发给对方即可加入');
-    setTimeout(() => { el.btnCopy.title = '复制邀请链接'; }, 1500);
-  } catch (e) {
-    systemMsg('复制失败，请手动分享会话码 ' + state.room);
-  }
-}
-
 function leave() {
   state.leaving = true;
   if (isOpen()) {
@@ -701,15 +813,7 @@ function leave() {
 }
 
 el.btnCreate.addEventListener('click', createRoom);
-
-el.joinForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  joinRoom(FIXED_ROOM || el.codeInput.value.trim().toUpperCase());
-});
-
-el.codeInput.addEventListener('input', () => {
-  el.codeInput.value = el.codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-});
+el.btnJoin.addEventListener('click', () => joinRoom(FIXED_ROOM));
 
 el.btnSend.addEventListener('click', sendText);
 
@@ -728,7 +832,6 @@ el.fileInput.addEventListener('change', () => {
   sendFiles(files);
 });
 
-el.btnCopy.addEventListener('click', copyInvite);
 el.btnLeave.addEventListener('click', leave);
 
 // 拖拽发送
@@ -801,16 +904,8 @@ el.msgInput.addEventListener('paste', (e) => {
     return;
   }
 
-  // 固定房间码：锁定输入框，创建/加入都用同一个码
-  if (FIXED_ROOM) {
-    el.codeInput.value = FIXED_ROOM;
-    el.codeInput.readOnly = true;
-    el.codeInput.classList.add('readonly');
-  } else {
-    const m = location.hash.match(/#r=([A-Z0-9]{6})/i);
-    if (m) {
-      el.codeInput.value = m[1].toUpperCase();
-      el.codeInput.focus();
-    }
-  }
+  // 入口页的头像预览
+  document.querySelectorAll('[data-avatar]').forEach((node) => {
+    node.innerHTML = AVATARS[Number(node.dataset.avatar) || 0].svg;
+  });
 })();

@@ -377,10 +377,11 @@ async function createRoom() {
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
       const code = FIXED_ROOM || genCode();
+      // 先把角色设为主机，确保 openHost 内部注册的 connection 监听不会因 role 还没赋值而丢弃连接
+      state.room = code;
+      state.role = 'host';
       try {
         await openHost(code);
-        state.room = code;
-        state.role = 'host';
         enterChat();
         setStatus('idle', '等待对方加入');
         return;
